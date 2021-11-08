@@ -28,10 +28,7 @@ func init() {
 	Register("tikv", newKVMeta)
 }
 
-func newTkvClient(driver, addr string) (tkvClient, error) {
-	if driver == "memkv" {
-		return newMockClient()
-	}
+func newTikvClient(driver, addr string) (tkvClient, error) {
 	if driver != "tikv" {
 		return nil, fmt.Errorf("invalid driver %s != expected %s", driver, "tikv")
 	}
@@ -126,9 +123,10 @@ func (tx *tikvTxn) set(key, value []byte) {
 	}
 }
 
-func (tx *tikvTxn) append(key []byte, value []byte) {
+func (tx *tikvTxn) append(key []byte, value []byte) []byte {
 	new := append(tx.get(key), value...)
 	tx.set(key, new)
+	return new
 }
 
 func (tx *tikvTxn) incrBy(key []byte, value int64) int64 {

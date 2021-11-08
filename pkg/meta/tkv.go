@@ -40,7 +40,7 @@ type kvTxn interface {
 	scanValues(prefix []byte, filter func(k, v []byte) bool) map[string][]byte
 	exist(prefix []byte) bool
 	set(key, value []byte)
-	append(key []byte, value []byte)
+	append(key []byte, value []byte) []byte
 	incrBy(key []byte, value int64) int64
 	dels(keys ...[]byte)
 }
@@ -93,6 +93,18 @@ type kvMeta struct {
 	freeMu     sync.Mutex
 	freeInodes freeID
 	freeChunks freeID
+}
+
+func newTkvClient(driver, addr string) (tkvClient, error) {
+	switch driver {
+	case "memkv":
+		return newMockClient()
+	case "tikv":
+		return newTikvClient(driver, addr)
+	case "fdb":
+		return newFdbClient(driver, addr)
+	}
+	return nil, fmt.Errorf("invalid driver %s != expected %s", driver, "tikv")
 }
 
 func newKVMeta(driver, addr string, conf *Config) (Meta, error) {
