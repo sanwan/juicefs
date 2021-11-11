@@ -40,7 +40,7 @@ type kvTxn interface {
 	scanValues(prefix []byte, filter func(k, v []byte) bool) map[string][]byte
 	exist(prefix []byte) bool
 	set(key, value []byte)
-	append(key []byte, value []byte)
+	append(key []byte, value []byte) []byte
 	incrBy(key []byte, value int64) int64
 	dels(keys ...[]byte)
 }
@@ -95,27 +95,17 @@ type kvMeta struct {
 	freeChunks freeID
 }
 
+var kvDrivers map[string]func(string) (tkvClient, error)
+
 func newTkvClient(driver, addr string) (tkvClient, error) {
-	switch driver {
-	case "memkv":
-		return newMockClient()
-	case "tikv":
-		return newTikvClient(driver, addr)
-	case "fdb":
-		return newFdbClient(driver, addr)
+	fn, ok := kvDrivers[driver]
+	if !ok {
+		return nil, fmt.Errorf("invalid driver %s != expected %s", driver, "tikv")
 	}
-	return nil, fmt.Errorf("invalid driver %s != expected %s", driver, "tikv")
+	return fn(addr)
 }
 
 func newKVMeta(driver, addr string, conf *Config) (Meta, error) {
-	var prefix string
-	if driver == "tikv" {
-		p := strings.Index(addr, "/")
-		if p > 0 {
-			prefix = addr[p+1:]
-			addr = addr[:p]
-		}
-	}
 	client, err := newTkvClient(driver, addr)
 	if err != nil {
 		return nil, fmt.Errorf("unable to connect driver %s addr %s: %s", driver, addr, err)
@@ -136,9 +126,6 @@ func newKVMeta(driver, addr string, conf *Config) (Meta, error) {
 		msgCallbacks: &msgCallbacks{
 			callbacks: make(map[uint32]MsgCallback),
 		},
-	}
-	if driver != "memkv" {
-		m.client = withPrefix(m.client, append([]byte(prefix), 0xFD))
 	}
 
 	m.root = 1
@@ -1985,6 +1972,7 @@ func (m *kvMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 	}
 	defer func() { m.of.InvalidateChunk(inode, indx) }()
 	var newSpace int64
+	var needCompact bool
 	err := m.txn(func(tx kvTxn) error {
 		var attr Attr
 		a := tx.get(m.inodeKey(inode))
@@ -2008,18 +1996,16 @@ func (m *kvMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 		attr.Mtimensec = uint32(now.Nanosecond())
 		attr.Ctime = now.Unix()
 		attr.Ctimensec = uint32(now.Nanosecond())
-		tx.append(m.chunkKey(inode, indx), marshalSlice(off, slice.Chunkid, slice.Size, slice.Off, slice.Len))
+		val := tx.append(m.chunkKey(inode, indx), marshalSlice(off, slice.Chunkid, slice.Size, slice.Off, slice.Len))
+		needCompact = (len(val)/sliceBytes)%100 == 99
 		tx.set(m.inodeKey(inode), m.marshal(&attr))
 		return nil
 	})
-	go func() {
-		val, _ := m.get(m.chunkKey(inode, indx))
-		if (len(val)/sliceBytes)%100 == 99 {
-			m.compactChunk(inode, indx, false)
-		}
-	}()
 	if err == nil {
 		m.updateStats(newSpace, 0)
+		if needCompact {
+			go m.compactChunk(inode, indx, false)
+		}
 	}
 	return errno(err)
 }

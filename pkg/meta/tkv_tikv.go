@@ -1,3 +1,5 @@
+// +build !notikv
+
 /*
  * JuiceFS, Copyright (C) 2021 Juicedata, Inc.
  *
@@ -17,7 +19,6 @@ package meta
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tikverr "github.com/tikv/client-go/v2/error"
@@ -26,15 +27,23 @@ import (
 
 func init() {
 	Register("tikv", newKVMeta)
+	kvDrivers["tikv"] = newTikvClient
 }
 
-func newTikvClient(driver, addr string) (tkvClient, error) {
-	if driver != "tikv" {
-		return nil, fmt.Errorf("invalid driver %s != expected %s", driver, "tikv")
+func newTikvClient(addr string) (tkvClient, error) {
+	var prefix string
+	p := strings.Index(addr, "/")
+	if p > 0 {
+		prefix = addr[p+1:]
+		addr = addr[:p]
 	}
 	pds := strings.Split(addr, ",")
 	client, err := tikv.NewTxnClient(pds)
-	return &tikvClient{client}, err
+	if err != nil {
+		return nil, err
+	}
+	c := &tikvClient{client}
+	return withPrefix(c, append([]byte(prefix), 0xFD)), nil
 }
 
 type tikvTxn struct {
@@ -123,9 +132,10 @@ func (tx *tikvTxn) set(key, value []byte) {
 	}
 }
 
-func (tx *tikvTxn) append(key []byte, value []byte) {
+func (tx *tikvTxn) append(key []byte, value []byte) []byte {
 	new := append(tx.get(key), value...)
 	tx.set(key, new)
+	return new
 }
 
 func (tx *tikvTxn) incrBy(key []byte, value int64) int64 {
